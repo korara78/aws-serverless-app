@@ -1,0 +1,61 @@
+name: CI/CD
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: aws-serverless-app-deploy
+  cancel-in-progress: false
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install AWS SAM CLI
+        uses: aws-actions/setup-sam@v2
+
+      - name: Install test dependencies
+        run: pip install -r requirements-dev.txt
+
+      - name: SAM build
+        run: make build
+
+      - name: SAM local invoke smoke check (Docker/SAM CLI pipeline step)
+        run: make test-local-invoke
+
+      - name: Run pytest (unit & integration)
+        run: make test
+
+      - name: Configure AWS credentials
+        if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: SAM deploy
+        if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+        run: sam deploy --no-confirm-changeset --no-fail-on-empty-changeset --region ${{ secrets.AWS_REGION }}
+
+      - name: Get API endpoint
+        if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+        id: get-endpoint
+        run: |
+          ENDPOINT=$(aws cloudformation describe-stacks --stack-name aws-serverless-app \
+            --query "Stacks[0].Outputs[?OutputKey=='ApiEndpoint'].OutputValue" --output text)
+          echo "endpoint=$ENDPOINT" >> "$GITHUB_OUTPUT"
+
+      - name: Post-deploy smoke test
+        if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+        env:
+          API_BASE_URL: ${{ steps.get-endpoint.outputs.endpoint }}
+        run: make test-smoke

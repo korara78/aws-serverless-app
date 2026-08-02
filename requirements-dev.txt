@@ -1,0 +1,4 @@
+boto3
+pytest
+moto[dynamodb]>=5
+requests

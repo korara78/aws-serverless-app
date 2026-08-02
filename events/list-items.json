@@ -1,0 +1,8 @@
+{
+  "httpMethod": "GET",
+  "path": "/items",
+  "pathParameters": null,
+  "queryStringParameters": null,
+  "headers": {},
+  "body": null
+}
