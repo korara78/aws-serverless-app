@@ -55,6 +55,7 @@ scoped to this repo's `main` branch — no AWS access keys stored anywhere.
 ├── Makefile                   single source of truth for every command below,
 │                               shared by local dev and CI so they can't drift
 ├── bootstrap/github-oidc.yaml  one-time OIDC provider + scoped deploy role
+├── guides/                     the project journey, step by step (see below)
 └── .github/workflows/ci-cd.yml
 ```
 
@@ -94,4 +95,18 @@ directly — each one's surface error pointed at the wrong layer:
    in `REVIEW_IN_PROGRESS`/`ROLLBACK_FAILED`, and SAM CLI then refuses to reuse it.
 
 All four are fixed in `bootstrap/github-oidc.yaml`'s policy, with comments
-explaining why each statement exists.
+explaining why each statement exists. The full write-up, with the actual
+CloudTrail/CloudFormation commands used to diagnose each one, is in
+[Guide 6](guides/06-troubleshooting-log.md).
+
+## Guides
+
+The `guides/` folder documents the project end to end, as six sequential
+guides:
+
+1. [Project overview and architecture](guides/01-project-overview.md)
+2. [Environment setup](guides/02-environment-setup.md)
+3. [Testing strategy](guides/03-testing-strategy.md) — why four different test layers exist and what each one actually proves
+4. [CI/CD pipeline](guides/04-cicd-pipeline.md)
+5. [GitHub OIDC deploy setup](guides/05-github-oidc-deploy-setup.md) — how to reproduce the OIDC bootstrap in a new AWS account
+6. [Troubleshooting log](guides/06-troubleshooting-log.md) — every real issue hit getting the deploy working, with cause and fix

@@ -6,6 +6,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 A minimal AWS SAM serverless CRUD API — API Gateway + a single Lambda function backed by DynamoDB, managing an `Items` resource (`id`, `name`, arbitrary extra fields). It exists primarily to demonstrate a full serverless CI/CD pipeline: GitHub Actions builds the SAM app, smoke-checks it via a real `sam local invoke` against a Dockerized DynamoDB, runs the pytest suite (unit + integration), deploys only if all of that passes, then runs a separate post-deploy smoke test against the live, deployed API Gateway endpoint.
 
+The project journey is documented in `guides/` as six numbered guides (overview, environment setup, testing strategy, CI/CD pipeline, GitHub OIDC deploy setup, troubleshooting log) — mirroring the same pattern used in the sibling portfolio projects `sf-ebikes-test-automation` (`guides/`) and `hl7-interface-qa` (`docs/`). **After changing app code, the test suites, the Makefile, the CI workflow, or `bootstrap/github-oidc.yaml`, proactively check whether `guides/*.md`, this file, or `README.md` need updating too — don't wait to be asked.**
+
 ## Commands
 
 ```bash
