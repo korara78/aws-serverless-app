@@ -11,6 +11,17 @@ Parameters:
   RepoName:
     Type: String
     Default: aws-serverless-app
+  # GitHub embeds these immutable IDs in the OIDC sub claim (alongside the
+  # human-readable org/repo names) so the trust relationship survives repo
+  # or org renames without being reusable by a new resource that reclaims
+  # the old name. Look up via: gh api users/<org> --jq .id ,
+  # gh api repos/<org>/<repo> --jq .id
+  GitHubOrgId:
+    Type: String
+    Default: "79677336"
+  RepoId:
+    Type: String
+    Default: "1320920972"
 
 Resources:
   GitHubOidcProvider:
@@ -38,7 +49,7 @@ Resources:
               StringEquals:
                 token.actions.githubusercontent.com:aud: sts.amazonaws.com
               StringLike:
-                token.actions.githubusercontent.com:sub: !Sub "repo:${GitHubOrg}/${RepoName}:ref:refs/heads/main"
+                token.actions.githubusercontent.com:sub: !Sub "repo:${GitHubOrg}@${GitHubOrgId}/${RepoName}@${RepoId}:ref:refs/heads/main"
       Policies:
         - PolicyName: SamDeployScoped
           PolicyDocument:
