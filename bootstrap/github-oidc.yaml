@@ -76,6 +76,12 @@ Resources:
                 Resource:
                   - !Sub "arn:aws:cloudformation:*:${AWS::AccountId}:stack/${RepoName}/*"
                   - !Sub "arn:aws:cloudformation:*:${AWS::AccountId}:stack/aws-sam-cli-managed-default/*"
+              - Sid: CloudFormationServerlessTransform
+                Effect: Allow
+                Action:
+                  - cloudformation:CreateChangeSet
+                Resource:
+                  - "arn:aws:cloudformation:*:aws:transform/Serverless-2016-10-31"
               - Sid: SamManagedDeployBucket
                 Effect: Allow
                 Action:
