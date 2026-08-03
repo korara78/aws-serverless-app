@@ -76,12 +76,18 @@ Resources:
                 Resource:
                   - !Sub "arn:aws:cloudformation:*:${AWS::AccountId}:stack/${RepoName}/*"
                   - !Sub "arn:aws:cloudformation:*:${AWS::AccountId}:stack/aws-sam-cli-managed-default/*"
+              # sam deploy --resolve-s3 bootstraps its own managed-bucket stack,
+              # which itself uses this transform -- needed even before the app
+              # stack is touched, not just for template.yaml's own transform.
               - Sid: CloudFormationServerlessTransform
                 Effect: Allow
                 Action:
                   - cloudformation:CreateChangeSet
                 Resource:
                   - "arn:aws:cloudformation:*:aws:transform/Serverless-2016-10-31"
+              # TagResource is required to create the bucket in the first place;
+              # DeleteBucket is required for CloudFormation to roll back cleanly
+              # if a later step in that bootstrap stack fails.
               - Sid: SamManagedDeployBucket
                 Effect: Allow
                 Action:
