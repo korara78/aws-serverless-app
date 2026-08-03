@@ -1,0 +1,9 @@
+{
+  "httpMethod": "GET",
+  "resource": "/accounts/{account_id}",
+  "path": "/accounts/does-not-exist",
+  "pathParameters": { "account_id": "does-not-exist" },
+  "queryStringParameters": null,
+  "headers": {},
+  "body": null
+}

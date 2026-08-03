@@ -9,31 +9,78 @@ each one would let a different class of bug through if it were removed.
 ## Layer 1: Unit tests (`tests/unit/`)
 
 Exercise `app.lambda_handler` directly against a `moto`-mocked DynamoDB
-table (`mock_aws()`). No Docker, no network, no AWS account — sub-second,
-runs anywhere. These cover the handler's routing logic and validation
-(missing `name` on create, 404s on unknown IDs, the full CRUD lifecycle)
-at the level of "does the code do what it's supposed to do."
+(`mock_aws()`). No Docker, no network, no AWS account — sub-second, runs
+anywhere. These cover the routing logic and the business rules that don't
+need real concurrency to verify: idempotent duplicate rejection,
+insufficient-funds rejection (and that the balance is unchanged after),
+reconciliation matching for a fresh account and after several transactions,
+reconciliation catching an injected mismatch, append-only enforcement (no
+update/delete route exists at all), boundary math (exact-balance trades,
+fractional BTC amounts), and the Coinbase price feed's failure/staleness
+handling — including a regression test for the exact bug caught verifying
+the live endpoint (`rates.USD` comes back as a string, not a number).
 
-What this layer *can't* prove: that the code's assumptions about DynamoDB's
-actual API behavior are correct. `moto` is a very good simulation, but it's
-still a simulation.
+The Coinbase call itself is never real here: `app._fetch_coinbase_price` —
+the one function that actually hits the network — is monkeypatched to a
+fixed price in every test that needs deterministic math, so BUY/SELL
+amounts are exact and reproducible. What this layer *can't* prove: that the
+code's assumptions about DynamoDB's actual API behavior are correct, or
+that anything works under genuine concurrent load — `moto` runs
+single-threaded, in-process, so two "concurrent" requests in a unit test
+are still strictly sequential from DynamoDB's point of view.
 
 ## Layer 2: Integration tests (`tests/integration/`)
 
 `tests/integration/conftest.py` starts a real `amazon/dynamodb-local`
-Docker container (session-scoped fixture) and creates a uniquely-named
-table per test via the `items_table` fixture. `test_api_integration.py`
-then runs the full create → list → update → delete → 404 lifecycle against
-that *real* DynamoDB engine — genuine network calls, genuine API responses,
-not a mock's approximation of them.
+Docker container (session-scoped fixture) and creates uniquely-named
+`Accounts`/`Transactions` tables (with the `AccountIndex` GSI) per test run
+via the `ledger_tables` fixture. `test_api_integration.py` then runs
+against that *real* DynamoDB engine — genuine network calls, genuine API
+responses, not a mock's approximation of them. Every test uses its own
+freshly created account (via a pytest fixture, per the spec's own test-
+isolation requirement) — nothing here relies on or mutates another test's
+state.
+
+This layer earns its keep with two tests unit tests structurally can't do:
+
+- **A real concurrency race.** `test_concurrent_buy_requests_that_together_exceed_balance`
+  fires two `BUY` requests at the same account from two real threads
+  (`ThreadPoolExecutor`) simultaneously, for an amount that together
+  exceeds the balance. Against `moto` this would just run sequentially and
+  prove nothing; against real DynamoDB Local it's an actual race, and the
+  test confirms exactly one request succeeds and the balance never goes
+  negative — direct proof the atomic conditional write does what rule 2 of
+  the spec requires, not just that the code *looks* like it should.
+- **One test hits the real Coinbase endpoint**, not a mocked price —
+  `test_full_lifecycle_against_real_dynamodb_and_coinbase` — proving the
+  whole real chain (DynamoDB Local + a genuine external HTTP call) works
+  end to end. Every other integration test fixes the price via the same
+  monkeypatch technique as the unit tests, since their point is proving
+  DynamoDB Local's transactional behavior, not Coinbase's availability —
+  mixing in live price variability there would only add flakiness for zero
+  benefit.
+
+**A real bug this layer caught building it:** the original implementation
+called `dynamodb.meta.client.transact_write_items(...)` — the low-level
+client hanging off a `boto3.resource("dynamodb")`. That client carries
+DynamoDB-specific event hooks meant for the *high-level* Table API's
+native-Python-type item transformation. Reusing it for `transact_write_items`
+— which takes already-low-level-formatted `AttributeValue` items — makes
+those hooks try to re-transform items that are already in wire format,
+corrupting them (`TransactionCanceledException` with cancellation reason
+`TypeError: cannot use 'moto.dynamodb.models.dynamo_type.DynamoType' as a
+dict key`). The fix: a separate, independently-created `boto3.client("dynamodb")`
+for every transactional write — `src/app.py`'s `dynamodb_client`. Caught
+locally with `moto` before this ever reached DynamoDB Local or a real
+account; see [Guide 6](06-troubleshooting-log.md) for the full writeup.
 
 One implementation detail worth calling out: `src/app.py` creates its
-`boto3` resource once, at import time, using whatever `TABLE_NAME` and
-`DYNAMODB_ENDPOINT_URL` are set in the environment at that moment (this is
-the normal, correct pattern for Lambda — you want that setup done once at
-cold start, not on every invocation). That means a test can't just
-`monkeypatch.setenv()` and expect `app.py`'s already-created `dynamodb`
-resource to notice. The fix, visible in `test_api_integration.py`:
+`boto3` resources once, at import time, using whatever table names and
+`DYNAMODB_ENDPOINT_URL` are set in the environment at that moment (the
+normal, correct pattern for Lambda — you want that setup done once at cold
+start, not on every invocation). That means a test can't just
+`monkeypatch.setenv()` and expect `app.py`'s already-created resources to
+notice. The fix, visible in `test_api_integration.py`:
 
 ```python
 def _reload_app():
@@ -43,49 +90,86 @@ def _reload_app():
 ```
 
 Setting the env vars *then* reloading the module re-runs its top-level
-code, rebinding `dynamodb`/`table` to point at the local container. This
-is a testing-only technique — production Lambda cold-starts don't need it,
-since the environment is fixed for the life of the execution environment.
+code, rebinding everything to point at the local container. Testing-only
+technique — a real Lambda cold-start never needs it.
 
 ## Layer 3: `sam local invoke` smoke check (`make test-local-invoke`)
 
-This is a genuinely different thing from Layer 2, even though both end up
-talking to a local DynamoDB. Layer 2 runs `app.lambda_handler` as plain
-Python, in the same process as pytest. This layer runs the *actual built
-Lambda artifact*, inside the *actual Lambda Docker runtime image* SAM CLI
-uses, invoked exactly the way `sam local invoke`/`sam local start-api`
-would invoke it in a more realistic local-testing setup.
+Runs the *actual built Lambda artifact*, inside the *actual Lambda Docker
+runtime image* SAM CLI uses — catches packaging problems Layer 2 can't
+(missing dependency, a handler path that's wrong in `template.yaml`, a
+Python syntax feature the real Lambda runtime doesn't support) since Layer
+2 runs `app.lambda_handler` as plain Python in your own local interpreter,
+not the Lambda runtime.
 
-What this catches that Layer 2 can't: packaging problems. A missing
-dependency in `src/requirements.txt`, a handler path that's wrong in
-`template.yaml`, a Python syntax feature the Lambda runtime's actual
-interpreter version doesn't support — none of these would show up running
-`app.lambda_handler` directly in your local Python environment, because
-your local environment isn't the Lambda runtime.
+The canned event (`events/get-account.json`) is a `GET` on a nonexistent
+account — enough to prove the built artifact boots, reads its table-name
+env vars, and reaches DynamoDB Local successfully, without needing
+Coinbase or any pre-seeded data. `test-local-invoke` creates a Docker
+network (`sam-test-net`), runs `amazon/dynamodb-local` on it, and invokes
+`sam local invoke --docker-network sam-test-net --env-vars env.local-invoke.json`.
 
-To make this container reach a local DynamoDB, `make test-local-invoke`
-creates a Docker network (`sam-test-net`), runs `amazon/dynamodb-local`
-attached to it, and invokes `sam local invoke --docker-network sam-test-net
---env-vars env.local-invoke.json`, where `env.local-invoke.json` points the
-function at `http://dynamodb-local:8000` — the container name, resolved via
-Docker's own DNS on that shared network. See `events/list-items.json` for
-the canned `GET /items` API Gateway proxy event it invokes with.
+**Two real, non-obvious things had to be fixed to make this layer actually
+mean anything** (both found by actually running it locally for the first
+time — this exact check had never been run outside CI before):
+
+1. **`sam local invoke --env-vars` only overrides environment variables
+   already declared in the template.** `DYNAMODB_ENDPOINT_URL` was only
+   ever supplied via `env.local-invoke.json`, never declared in
+   `template.yaml`'s `Globals.Function.Environment.Variables` — so SAM CLI
+   silently dropped it, the Lambda fell through to its `boto3.resource("dynamodb")`
+   default (real AWS), and got `UnrecognizedClientException` from
+   authenticating with fake local credentials against a real endpoint.
+   Fixed by declaring `DYNAMODB_ENDPOINT_URL: ""` in the template so
+   `--env-vars` has an existing key to override; it stays empty (and
+   therefore inert — see `app.py`'s `if _endpoint_url:` check) on a real
+   deploy.
+2. **DynamoDB Local partitions its in-memory data by the AWS access key
+   used in each request**, unless started with `-sharedDb`. The
+   `aws dynamodb create-table` call in the Makefile and the invoked Lambda
+   container (which gets its own default credentials from the SAM CLI
+   Lambda runtime emulator, `defaultkey`/`defaultsecret` — unrelated to
+   anything in `env.local-invoke.json`, since `AWS_ACCESS_KEY_ID` isn't a
+   template-declared variable either) were silently using two different
+   credentials, and therefore two different, empty databases —
+   `ResourceNotFoundException: Cannot do operations on a non-existent
+   table`, for a table that very much existed under different credentials.
+   Fixed by starting DynamoDB Local with `-inMemory -sharedDb` in both the
+   Makefile and `tests/integration/conftest.py`.
+
+**A third thing worth knowing, not a bug exactly but a real gap:**
+`sam local invoke` exits `0` even when the invoked function throws an
+unhandled exception — a synchronous Lambda invoke "succeeding" just means
+the platform ran the function and returned *a* response, error payload or
+not, mirroring real Lambda's own invoke semantics. That means the exit code
+alone was never actually a valid pass/fail signal for this smoke check —
+before the fixes above, `make test-local-invoke` was passing (exit 0)
+while the invoked function was silently throwing on every single run. The
+target now `tee`s the response to a file and greps it for `"errorType"`,
+failing the `make` target explicitly if the function's own response
+indicates an error, rather than trusting SAM CLI's exit code.
 
 ## Layer 4: Post-deploy smoke test (`tests/smoke/`)
 
 Runs only in CI, only after a real `sam deploy` succeeds. `test_smoke.py`
-uses plain `requests` to run the same CRUD lifecycle against `API_BASE_URL`
-— the actual API Gateway URL from the just-deployed stack's CloudFormation
+uses plain `requests` to run a full account lifecycle (create → check the
+price feed → `BUY` → confirm the duplicate `transaction_id` is rejected →
+verify reconciliation → confirm history) against `API_BASE_URL` — the
+actual API Gateway URL from the just-deployed stack's CloudFormation
 outputs. This is the layer that answers the only question that actually
 matters at the end of a deploy: does the live thing work, right now, for
 real — not "did the previous three layers pass," which only proves the
-*code* is probably fine.
+*code* is probably fine. There's no delete-account endpoint (deliberate —
+real ledgers don't delete, and `Transactions` rows are append-only by
+design), so accounts created here accumulate in the live environment, same
+as every other suite in this portfolio that creates real records against a
+live target rather than cleaning up after itself.
 
 ## Summary
 
 | Layer | Real DynamoDB? | Real Lambda runtime? | Real network? | Real deployed endpoint? |
 |---|---|---|---|---|
 | Unit | No (mocked) | No | No | No |
-| Integration | Yes (local) | No | Yes (local) | No |
+| Integration | Yes (local) | No | Yes (local + 1 real Coinbase call) | No |
 | `sam local invoke` | Yes (local) | Yes | Yes (local) | No |
 | Smoke | Yes (AWS) | Yes | Yes (internet) | Yes |

@@ -27,6 +27,14 @@ pip install -r requirements-dev.txt   # pytest, moto, boto3, requests
 Docker just needs to be running and reachable from your shell
 (`docker ps` should succeed with no errors).
 
+**If `make build` fails with `PythonPipBuilder:Validation - ... did not
+satisfy constraints for runtime: python3.12`:** your local machine's
+default `python3` isn't actually 3.12 (CI's `actions/setup-python@v5` pins
+this exactly; a local machine might not). `sam build --use-container`
+sidesteps this entirely by building inside an AWS-provided Docker image
+that matches the real Lambda runtime, regardless of what's installed
+locally — use that instead of plain `sam build` if you hit this.
+
 **Image versioning:** both `Makefile` and `tests/integration/conftest.py`
 pin `amazon/dynamodb-local` to a specific tag (`3.3.1`) rather than
 `latest`. An unpinned `latest` tag means CI and local runs can silently
