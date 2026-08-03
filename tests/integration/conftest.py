@@ -39,7 +39,7 @@ def dynamodb_local():
     subprocess.run(
         [
             "docker", "run", "-d", "--rm", "--name", container_name,
-            "-p", f"{DYNAMODB_PORT}:8000", "amazon/dynamodb-local",
+            "-p", f"{DYNAMODB_PORT}:8000", "amazon/dynamodb-local:3.3.1",
         ],
         check=True,
         capture_output=True,

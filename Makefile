@@ -17,7 +17,7 @@ test: test-unit test-integration
 test-local-invoke: build
 	docker network inspect sam-test-net >/dev/null 2>&1 || docker network create sam-test-net
 	docker rm -f dynamodb-local >/dev/null 2>&1 || true
-	docker run -d --rm --name dynamodb-local --network sam-test-net -p 8000:8000 amazon/dynamodb-local
+	docker run -d --rm --name dynamodb-local --network sam-test-net -p 8000:8000 amazon/dynamodb-local:3.3.1
 	AWS_ACCESS_KEY_ID=local AWS_SECRET_ACCESS_KEY=local aws dynamodb create-table \
 		--table-name sam-local-invoke-smoke-table \
 		--attribute-definitions AttributeName=id,AttributeType=S \

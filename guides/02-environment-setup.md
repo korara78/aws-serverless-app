@@ -6,7 +6,7 @@
 
 | Tool | Why | Notes |
 |---|---|---|
-| Docker | Runs `amazon/dynamodb-local` for integration tests, and the actual Lambda container for `sam local invoke` | |
+| Docker | Runs `amazon/dynamodb-local` for integration tests, and the actual Lambda container for `sam local invoke` | Docker Desktop with WSL2 integration enabled works fine; no special config needed beyond `docker ps` succeeding |
 | Python 3.12+ | Runs the Lambda code and the pytest suite | Lambda's own runtime is Python 3.12; using the same version locally avoids version-skew surprises |
 | AWS SAM CLI | Builds and locally invokes the Lambda, drives `sam deploy` | Not part of the AWS CLI — separate install |
 | AWS CLI | Talks to CloudFormation/S3/IAM directly (used for the one-time OIDC bootstrap, and for inspecting stack state) | |
@@ -26,6 +26,15 @@ pip install -r requirements-dev.txt   # pytest, moto, boto3, requests
 
 Docker just needs to be running and reachable from your shell
 (`docker ps` should succeed with no errors).
+
+**Image versioning:** both `Makefile` and `tests/integration/conftest.py`
+pin `amazon/dynamodb-local` to a specific tag (`3.3.1`) rather than
+`latest`. An unpinned `latest` tag means CI and local runs can silently
+pick up a different image on different days — if AWS ever changes
+DynamoDB Local's behavior, tests could start failing (or start passing
+when they shouldn't) with no actual code change to point to. Bump the tag
+deliberately in both places when you want a newer version, rather than
+getting one automatically.
 
 ## Verify
 
