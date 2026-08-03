@@ -4,24 +4,35 @@
 
 ## What this project is
 
-A small serverless CRUD API — API Gateway → Lambda → DynamoDB, built with AWS
-SAM — for managing an `Items` resource. The API itself is deliberately simple.
-What the project actually demonstrates is the pipeline around it: a complete,
-working path from a git push to a verified live deployment, with no manual
-steps and no long-lived AWS credentials anywhere.
+A simulated brokerage-style Bitcoin + fiat ledger — API Gateway → Lambda →
+DynamoDB, built with AWS SAM. It started as a deliberately trivial `Items`
+CRUD API whose only job was to prove the pipeline around it worked; the
+business logic layer was later replaced with a real ledger (fiat balance,
+BTC balance, buy/sell against a live price, full transaction integrity)
+while keeping the exact same SAM + Lambda + DynamoDB + API Gateway stack
+and CI/CD pipeline. What the project demonstrates is both things at once: a
+complete, working path from git push to verified live deployment, *and*
+correctness properties (idempotency, atomicity, no negative balances under
+real concurrency) that only matter once the application underneath is
+actually worth getting right.
 
 ## Why this project
 
 Three things are easy to claim and hard to actually prove in a portfolio
 project: that the tests are real (not testing a mock of a mock), that the
-deploy is real (not "should work"), and that the deploy is provably safe to
-trigger automatically. This project is built to make all three checkable,
-not just asserted:
+deploy is real (not "should work"), and that the business logic is
+correct under conditions that are annoying to set up (real concurrency,
+real external dependencies, real partial-failure scenarios). This project
+is built to make all three checkable, not just asserted:
 
 - **Real tests, not just mocks.** Unit tests use `moto` (fully mocked,
   fast), but integration tests run against a real `amazon/dynamodb-local`
   container over a real network connection — genuine DynamoDB engine
-  behavior, not a Python dict pretending to be one.
+  behavior, not a Python dict pretending to be one. One integration test
+  fires two real, simultaneously-submitted `BUY` requests at the same
+  account and confirms the atomic conditional write actually prevents an
+  overdraft — something a single-threaded mock can't meaningfully test at
+  all (see [Guide 3](03-testing-strategy.md)).
 - **Real deploy, not just a green checkmark.** The pipeline's last step is a
   smoke test that hits the actual, live, just-deployed API Gateway endpoint
   over HTTPS — not the local stand-in.
@@ -57,25 +68,32 @@ Each box maps directly to a file in this repo:
 | Box | File(s) |
 |---|---|
 | GitHub Actions | `.github/workflows/ci-cd.yml` |
-| Docker / SAM CLI local invoke | `Makefile`'s `test-local-invoke` target, `events/list-items.json`, `env.local-invoke.json` |
+| Docker / SAM CLI local invoke | `Makefile`'s `test-local-invoke` target, `events/get-account.json`, `env.local-invoke.json` |
 | Pytest suite | `tests/unit/`, `tests/integration/` |
 | Serverless Backend | `template.yaml`, `src/app.py` |
 | Post-deploy smoke test | `tests/smoke/test_smoke.py` |
 
 ## What the API actually does
 
-Five routes, one Lambda function, one DynamoDB table:
+Six routes, one Lambda function, two DynamoDB tables (`Accounts`, and an
+append-only `Transactions` table with a `account_id`+`executed_at` GSI for
+per-account history queries):
 
 | Method | Path | Behavior |
 |---|---|---|
-| `POST` | `/items` | Create an item; requires `name` in the JSON body |
-| `GET` | `/items` | List all items |
-| `GET` | `/items/{id}` | Get one item, `404` if it doesn't exist |
-| `PUT` | `/items/{id}` | Update an item, `404` if it doesn't exist |
-| `DELETE` | `/items/{id}` | Delete an item, `404` if it doesn't exist |
+| `POST` | `/accounts` | Create an account — writes a seeded `Accounts` row and a synthetic `SEED` `Transactions` row atomically |
+| `GET` | `/accounts/{id}` | Current cached balances, `404` if unknown |
+| `GET` | `/accounts/{id}/balance/verify` | Recompute the balance from the full transaction log and compare to the cache |
+| `POST` | `/accounts/{id}/transactions` | Submit a `BUY`/`SELL`; idempotent on client-generated `transaction_id`, atomic against the balance update |
+| `GET` | `/accounts/{id}/transactions` | Full transaction history, chronological |
+| `GET` | `/price` | Current BTC/USD price, proxied and short-TTL-cached from Coinbase |
 
-See `src/app.py` for the full handler — it's short enough to read directly
-rather than needing a separate walkthrough.
+The full business-rule reasoning (idempotency via conditional writes,
+atomicity via `TransactWriteItems`, why a `SEED` ledger row exists instead
+of an untracked starting-balance field, why two REJECTED_* statuses behave
+differently under the hood) lives as comments directly in `src/app.py` —
+it's short enough to read directly rather than needing a separate
+walkthrough.
 
 ## Guide series
 

@@ -1,7 +1,9 @@
 AWSTemplateFormatVersion: '2010-09-09'
 Transform: AWS::Serverless-2016-10-31
 Description: >
-  Simple CRUD API for items, backed by Lambda + API Gateway + DynamoDB.
+  Simulated Bitcoin + fiat brokerage ledger API — Lambda + API Gateway +
+  DynamoDB, with an append-only transaction log as the source of truth for
+  account balances.
 
 Globals:
   Function:
@@ -10,59 +12,100 @@ Globals:
     Runtime: python3.12
     Environment:
       Variables:
-        TABLE_NAME: !Ref ItemsTable
+        ACCOUNTS_TABLE_NAME: !Ref AccountsTable
+        TRANSACTIONS_TABLE_NAME: !Ref TransactionsTable
+        # Declared here (empty) purely so `sam local invoke --env-vars` has
+        # an existing key to override — SAM CLI only overrides environment
+        # variables already declared in the template, it silently drops any
+        # key in --env-vars that isn't. Stays empty on a real deploy, so
+        # app.py's `if _endpoint_url:` check is never true there.
+        DYNAMODB_ENDPOINT_URL: ""
 
 Resources:
-  ItemsTable:
+  AccountsTable:
     Type: AWS::DynamoDB::Table
     Properties:
-      TableName: !Sub "${AWS::StackName}-items"
+      TableName: !Sub "${AWS::StackName}-accounts"
       BillingMode: PAY_PER_REQUEST
       AttributeDefinitions:
-        - AttributeName: id
+        - AttributeName: account_id
           AttributeType: S
       KeySchema:
-        - AttributeName: id
+        - AttributeName: account_id
           KeyType: HASH
 
-  ItemsFunction:
+  TransactionsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub "${AWS::StackName}-transactions"
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: transaction_id
+          AttributeType: S
+        - AttributeName: account_id
+          AttributeType: S
+        - AttributeName: executed_at
+          AttributeType: S
+      KeySchema:
+        - AttributeName: transaction_id
+          KeyType: HASH
+      GlobalSecondaryIndexes:
+        - IndexName: AccountIndex
+          KeySchema:
+            - AttributeName: account_id
+              KeyType: HASH
+            - AttributeName: executed_at
+              KeyType: RANGE
+          Projection:
+            ProjectionType: ALL
+
+  LedgerFunction:
     Type: AWS::Serverless::Function
     Properties:
       CodeUri: src/
       Handler: app.lambda_handler
       Policies:
         - DynamoDBCrudPolicy:
-            TableName: !Ref ItemsTable
+            TableName: !Ref AccountsTable
+        - DynamoDBCrudPolicy:
+            TableName: !Ref TransactionsTable
       Events:
-        CreateItem:
+        CreateAccount:
           Type: Api
           Properties:
-            Path: /items
+            Path: /accounts
             Method: post
-        ListItems:
+        GetAccount:
           Type: Api
           Properties:
-            Path: /items
+            Path: /accounts/{account_id}
             Method: get
-        GetItem:
+        VerifyBalance:
           Type: Api
           Properties:
-            Path: /items/{id}
+            Path: /accounts/{account_id}/balance/verify
             Method: get
-        UpdateItem:
+        CreateTransaction:
           Type: Api
           Properties:
-            Path: /items/{id}
-            Method: put
-        DeleteItem:
+            Path: /accounts/{account_id}/transactions
+            Method: post
+        ListTransactions:
           Type: Api
           Properties:
-            Path: /items/{id}
-            Method: delete
+            Path: /accounts/{account_id}/transactions
+            Method: get
+        GetPrice:
+          Type: Api
+          Properties:
+            Path: /price
+            Method: get
 
 Outputs:
   ApiEndpoint:
     Description: API Gateway endpoint URL for the Prod stage
     Value: !Sub "https://${ServerlessRestApi}.execute-api.${AWS::Region}.amazonaws.com/Prod/"
-  ItemsTableName:
-    Value: !Ref ItemsTable
+  AccountsTableName:
+    Value: !Ref AccountsTable
+  TransactionsTableName:
+    Value: !Ref TransactionsTable
