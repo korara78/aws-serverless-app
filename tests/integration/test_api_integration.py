@@ -56,7 +56,7 @@ def test_full_lifecycle_against_real_dynamodb_and_coinbase(ledger_tables):
     assert buy_response["statusCode"] == 201
     txn = json.loads(buy_response["body"])
     price_used = Decimal(txn["btc_price_at_execution"])
-    assert Decimal(txn["btc_amount"]) == Decimal("400") / price_used
+    assert Decimal(txn["btc_amount"]) == app._quantize_btc(Decimal("400") / price_used)
 
     verify = json.loads(
         app.lambda_handler(
@@ -105,6 +105,44 @@ def test_duplicate_transaction_id_against_real_dynamodb(ledger_tables, monkeypat
         )["body"]
     )
     assert Decimal(updated["usd_balance"]) == Decimal("500")
+
+
+def test_reconciliation_matches_with_high_precision_mixed_digit_amounts(ledger_tables, monkeypatch):
+    # Regression test for a real bug caught against the live deployed
+    # endpoint. DynamoDB's own server-side arithmetic (used for the
+    # Accounts balance UpdateExpression) preserves up to 38 significant
+    # digits; Python's default Decimal context caps at 28. Summing a
+    # low-precision SEED balance (few significant digits) with a BUY's
+    # computed btc_amount (up to 28 digits from a single division) can need
+    # more than 28 digits to represent the exact sum — without
+    # `decimal.getcontext().prec = 38` in app.py, Python's side would
+    # silently round it while DynamoDB's side wouldn't, and verify_balance
+    # would report a false mismatch on genuinely correct data. Confirmed
+    # this doesn't reproduce against moto (its UpdateExpression arithmetic
+    # goes through the same process-wide Python Decimal context as the test
+    # itself, so both sides round identically regardless of the fix) — only
+    # real DynamoDB Local/AWS actually preserve the full 38-digit result,
+    # which is exactly why this test lives here and not in tests/unit.
+    app = _reload_app()
+    app._price_cache["price"] = None
+    app._price_cache["fetched_at"] = 0.0
+    monkeypatch.setattr(app, "_fetch_coinbase_price", lambda: Decimal("63421.06"))
+
+    account = _create_account(app, usd_balance="1000", btc_balance="0.7870232")
+    response = _buy_sell(app, account["account_id"], "BUY", "txn-precision", "100")
+    assert response["statusCode"] == 201
+
+    result = json.loads(
+        app.lambda_handler(
+            _event(
+                "GET",
+                "/accounts/{account_id}/balance/verify",
+                path_params={"account_id": account["account_id"]},
+            ),
+            None,
+        )["body"]
+    )
+    assert result["matches"] is True
 
 
 def test_concurrent_buy_requests_that_together_exceed_balance(ledger_tables, monkeypatch):

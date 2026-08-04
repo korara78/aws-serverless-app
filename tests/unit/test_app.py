@@ -143,7 +143,7 @@ def test_buy_reduces_usd_increases_btc(ledger_tables, monkeypatch):
     response = _buy_sell(app, account["account_id"], "BUY", "txn-1", "500")
     assert response["statusCode"] == 201
     txn = json.loads(response["body"])
-    assert Decimal(txn["btc_amount"]) == Decimal("500") / price
+    assert Decimal(txn["btc_amount"]) == app._quantize_btc(Decimal("500") / price)
 
     updated = json.loads(
         app.lambda_handler(
@@ -152,7 +152,7 @@ def test_buy_reduces_usd_increases_btc(ledger_tables, monkeypatch):
         )["body"]
     )
     assert Decimal(updated["usd_balance"]) == Decimal("500")
-    assert Decimal(updated["btc_balance"]) == Decimal("500") / price
+    assert Decimal(updated["btc_balance"]) == app._quantize_btc(Decimal("500") / price)
 
 
 def test_sell_reduces_btc_increases_usd(ledger_tables, monkeypatch):
@@ -171,7 +171,7 @@ def test_sell_reduces_btc_increases_usd(ledger_tables, monkeypatch):
         )["body"]
     )
     assert Decimal(updated["usd_balance"]) == Decimal("500")
-    assert Decimal(updated["btc_balance"]) == Decimal("1") - Decimal("500") / price
+    assert Decimal(updated["btc_balance"]) == Decimal("1") - app._quantize_btc(Decimal("500") / price)
 
 
 # --- Insufficient funds -------------------------------------------------------
@@ -395,6 +395,17 @@ def test_fractional_btc_amount_precision_reconciles(ledger_tables, monkeypatch):
         )["body"]
     )
     assert result["matches"] is True
+
+
+# A regression test for the high-precision SEED+BUY reconciliation bug
+# (see Guide 6) deliberately does NOT live here: moto's UpdateExpression
+# arithmetic goes through Python's own Decimal machinery under the same
+# process-wide context as the test itself, so both "cached" and "computed"
+# would round identically and the test would pass whether or not the real
+# fix (decimal.getcontext().prec = 38) is even in place — a false sense of
+# coverage. Confirmed against real DynamoDB Local that it reproduces the
+# same discrepancy AWS does; the real regression test lives in
+# tests/integration/test_api_integration.py instead.
 
 
 # --- Coinbase price feed -------------------------------------------------------

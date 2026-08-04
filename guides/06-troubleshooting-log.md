@@ -294,13 +294,109 @@ exit code.
 
 ---
 
-## The pattern across both parts
+## Part 3: A real precision bug, caught by the live smoke test doing its job
 
-Same lesson twice, in two different layers: a green result (a passing
-`make test-local-invoke`, a `TransactionCanceledException` that looks like
-a permissions problem) isn't proof of anything until you've checked what it
-actually verified. Reproducing each failure in isolation — a minimal script
+PR #1 (the ledger migration) merged, deployed, and its automated post-deploy
+smoke test failed on `GET /price` returning `403`. Manually curling the
+endpoint minutes later returned a clean `200` — API Gateway's edge
+deployment hadn't fully propagated yet when the smoke test fired
+immediately after `sam deploy` finished; a transient timing race, not a
+code bug. But re-running the full lifecycle by hand to confirm the API
+actually worked surfaced something the automated smoke test's simple
+assertions never would have: `GET /accounts/{id}/balance/verify` reported
+`"matches": false` on an account with completely legitimate transaction
+history.
+
+### 8. Reconciliation false-mismatch: Python vs. DynamoDB Decimal precision
+
+**Symptom:** `cached_btc_balance` and `computed_btc_balance` printed as
+visually-different strings —
+`0.788599963302284761560276665196` (cached) vs.
+`0.7885999633022847615602766652` (computed) — 30 significant digits versus
+28.
+
+**Cause:** Python's default `Decimal` context caps at 28 significant
+digits. DynamoDB's own Number type preserves up to 38, and the balance
+update (`SET btc_balance = btc_balance + :btc`) happens server-side, inside
+DynamoDB itself — not in Python. Summing a low-precision `SEED` balance
+(`0.7870232`, from the random demo-seed generator) with a `BUY`'s computed
+`btc_amount` (up to 28 digits from a single division) produced an *exact*
+sum needing 30 digits to represent losslessly. DynamoDB kept all 30;
+Python's `verify_balance` summation, bound by the default 28-digit context,
+silently rounded its copy down to 28 — a false mismatch on genuinely
+correct data.
+
+**First fix attempt — wrong:** widen Python's context to match DynamoDB's
+own ceiling (`decimal.getcontext().prec = 38`). This resolved the
+mismatch, but broke `create_transaction` outright:
+```
+ValidationException: DynamoDB only supports precision up to 38 digits
+```
+Because `btc_amount = usd_amount / price` now had *room* to compute a
+result using close to the full 38 digits itself, and DynamoDB's own
+addition of that value to the existing cached balance could need *more*
+than 38 digits to represent exactly — which DynamoDB rejects outright
+rather than silently rounding. Raising the ceiling just moved the same
+problem one level up.
+
+**The actual fix:** stop treating `btc_amount` as an arbitrary-precision
+division result at all. Real BTC amounts are granular to the satoshi
+(1e-8) — quantize every BTC-denominated value (a `SEED` balance, a computed
+`btc_amount`) to 8 decimal places, with `ROUND_DOWN`, at the one point each
+enters the system, before it's used in any arithmetic or stored anywhere.
+Bounded inputs keep every subsequent sum well within both Python's default
+precision and DynamoDB's ceiling — the mismatch becomes structurally
+impossible rather than papered over by raising a limit.
+
+**A second bug, found fixing the first:** quantizing to a fixed number of
+decimal places can itself produce a `Decimal` object whose default string
+form is scientific notation — `Decimal('0').quantize(Decimal('0.00000001'))`
+is `Decimal('0E-8')`, and *any* sufficiently small quantity (not just exact
+zero — `Decimal('0.0000001')` renders as `'1E-7'`) hits the same thing.
+boto3's `TypeSerializer` converts `Decimal` to a DynamoDB Number using
+plain `str()`, and DynamoDB's Number type flatly rejects scientific
+notation:
+```
+ValueError: invalid literal for int() with base 10: '0E-8'
+```
+(surfacing from *inside* a `TransactWriteItems` call, via moto in local
+testing — the same constraint applies against real DynamoDB, this just
+happened to be caught locally first this time). Fixed by patching
+`TypeSerializer.serialize` at the class level to use `format(value, "f")`
+(always fixed-point) instead of `str()` for `Decimal` specifically — done
+once, so it covers both this module's own low-level `transact_write_items`
+calls *and* the resource-level `Table.put_item`/`update_item` API, which
+uses the identical `TypeSerializer` internally. Guarded to only patch once
+(`_patched_for_decimal` marker), since `importlib.reload(app)` — used by
+the integration tests to rebind `app` to a local DynamoDB endpoint — would
+otherwise re-wrap the already-patched function around itself on every
+reload and blow the recursion limit on the very next call.
+
+**Why this one wasn't caught by any local test until now:** every existing
+unit/integration test used clean, low-digit-count fixture values (round
+seed balances, round prices) that never happened to need more than a
+handful of significant digits — the bug only manifests when a
+low-precision value and a high-precision one get summed together, which
+only occurred with the randomly-generated demo seed balance in real use.
+The regression test added for this (`test_reconciliation_matches_with_high_precision_mixed_digit_amounts`)
+deliberately lives in `tests/integration`, not `tests/unit` — confirmed
+that moto's `UpdateExpression` arithmetic goes through the same
+process-wide Python `Decimal` context as the test itself, so both
+"cached" and "computed" would round identically under moto regardless of
+whether the real fix is in place, giving false confidence. Real DynamoDB
+Local reproduces the exact discrepancy real AWS does.
+
+---
+
+## The pattern across all three parts
+
+Same lesson three times, in three different layers: a green result (a
+passing `make test-local-invoke`, a `TransactionCanceledException` that
+looks like a permissions problem, a live smoke test that failed for an
+unrelated transient reason) isn't proof of anything — good or bad — until
+you've checked what it actually verified, or manually re-confirmed the
+real thing works. Reproducing each failure in isolation — a minimal script
 outside the app, a debug print of the actual container environment, a
-direct `docker logs` check of whether DynamoDB Local ever received the
-request at all — is what turned every vague symptom in both parts into a
-precise, one-line root cause.
+direct `docker logs` check, comparing exact digit counts between two
+"equal-looking" numbers — is what turned every vague symptom across all
+three parts into a precise, one-line root cause.

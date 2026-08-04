@@ -13,10 +13,54 @@ import boto3
 from boto3.dynamodb.conditions import Key
 from boto3.dynamodb.types import TypeSerializer
 
+# boto3's own Decimal -> DynamoDB Number serialization uses plain str(),
+# which switches to scientific notation past a threshold (Decimal('0E-8'),
+# Decimal('1E-7'), etc — not just for zero, any sufficiently small/precise
+# value). DynamoDB's Number type flatly rejects scientific notation
+# (confirmed live: `ValueError: invalid literal for int() with base 10:
+# '0E-8'` surfaced from inside a TransactWriteItems call). Patched here,
+# once, at the class level, so every write path — this module's own
+# low-level transact_write_items calls *and* the resource-level Table API's
+# put_item/update_item, which uses the exact same TypeSerializer internally
+# — always emits plain fixed-point, not just the paths this module wrote by
+# hand.
+if not getattr(TypeSerializer.serialize, "_patched_for_decimal", False):
+    _original_serialize = TypeSerializer.serialize
+
+    def _patched_serialize(self, value):
+        if isinstance(value, Decimal):
+            return {"N": format(value, "f")}
+        return _original_serialize(self, value)
+
+    _patched_serialize._patched_for_decimal = True
+    TypeSerializer.serialize = _patched_serialize
+
 ACCOUNTS_TABLE_NAME = os.environ.get("ACCOUNTS_TABLE_NAME", "Accounts")
 TRANSACTIONS_TABLE_NAME = os.environ.get("TRANSACTIONS_TABLE_NAME", "Transactions")
 COINBASE_URL = "https://api.coinbase.com/v2/exchange-rates?currency=BTC"
 PRICE_CACHE_TTL_SECONDS = 45
+
+# Standard Bitcoin precision — a satoshi, 1e-8 BTC. Every BTC-denominated
+# value (a SEED balance, a computed btc_amount) is quantized to this before
+# it's used or stored anywhere, not left as the raw, arbitrary-length result
+# of a division. This isn't just cosmetic: confirmed live, an unquantized
+# btc_amount (up to 28+ significant digits from a single division) summed
+# with a low-precision SEED balance can need more digits to represent
+# exactly than Python's default Decimal context (28) preserves — a false
+# reconciliation mismatch on genuinely correct data. Widening Python's
+# context to DynamoDB's own 38-digit ceiling "fixes" that but only trades
+# it for a worse failure: DynamoDB itself rejects TransactWriteItems
+# whose arithmetic would need *more* than 38 digits to represent exactly
+# (`ValidationException: DynamoDB only supports precision up to 38 digits`).
+# Quantizing at the source — the only point values actually need bounding —
+# avoids both, and is also just correct: real BTC amounts don't have
+# unlimited precision, they're granular to the satoshi.
+SATOSHI = Decimal("0.00000001")
+
+
+def _quantize_btc(amount):
+    return amount.quantize(SATOSHI, rounding=decimal.ROUND_DOWN)
+
 
 _dynamodb_kwargs = {}
 _endpoint_url = os.environ.get("DYNAMODB_ENDPOINT_URL")
@@ -136,7 +180,7 @@ def _default_seed_balances():
     # section) — random.uniform is fine here, this randomness never touches
     # actual trade math, only the cosmetic starting balance.
     usd_balance = Decimal(str(round(random.uniform(25000, 50000), 2)))
-    btc_balance = Decimal(str(round(random.uniform(0.5, 1.5), 8)))
+    btc_balance = _quantize_btc(Decimal(str(random.uniform(0.5, 1.5))))
     return usd_balance, btc_balance
 
 
@@ -145,7 +189,10 @@ def create_account(event):
 
     if "usd_balance" in body or "btc_balance" in body:
         usd_balance = Decimal(str(body.get("usd_balance", "0")))
-        btc_balance = Decimal(str(body.get("btc_balance", "0")))
+        # Quantized even on an explicit, caller-supplied value — nothing
+        # anywhere in the system should ever hold a btc_balance with more
+        # than satoshi precision, not just the randomly-generated default.
+        btc_balance = _quantize_btc(Decimal(str(body.get("btc_balance", "0"))))
     else:
         usd_balance, btc_balance = _default_seed_balances()
 
@@ -324,7 +371,7 @@ def create_transaction(account_id, event):
         return _response(404, {"message": "Account not found"})
 
     price, price_stale = get_btc_price()
-    btc_amount = usd_amount / price
+    btc_amount = _quantize_btc(usd_amount / price)
     now = _now_iso()
 
     if trade_type == "BUY":
