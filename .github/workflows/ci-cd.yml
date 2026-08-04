@@ -49,16 +49,27 @@ jobs:
         if: github.ref == 'refs/heads/main' && github.event_name == 'push'
         run: sam deploy --no-confirm-changeset --no-fail-on-empty-changeset --region ${{ secrets.AWS_REGION }}
 
-      - name: Get API endpoint
+      - name: Get stack outputs
         if: github.ref == 'refs/heads/main' && github.event_name == 'push'
-        id: get-endpoint
+        id: get-outputs
         run: |
-          ENDPOINT=$(aws cloudformation describe-stacks --stack-name aws-serverless-app \
-            --query "Stacks[0].Outputs[?OutputKey=='ApiEndpoint'].OutputValue" --output text)
-          echo "endpoint=$ENDPOINT" >> "$GITHUB_OUTPUT"
+          OUTPUTS=$(aws cloudformation describe-stacks --stack-name aws-serverless-app \
+            --query "Stacks[0].Outputs" --output json)
+          echo "endpoint=$(echo "$OUTPUTS" | jq -r '.[] | select(.OutputKey=="ApiEndpoint") | .OutputValue')" >> "$GITHUB_OUTPUT"
+          echo "frontend_bucket=$(echo "$OUTPUTS" | jq -r '.[] | select(.OutputKey=="FrontendBucketName") | .OutputValue')" >> "$GITHUB_OUTPUT"
+          echo "frontend_distribution_id=$(echo "$OUTPUTS" | jq -r '.[] | select(.OutputKey=="FrontendDistributionId") | .OutputValue')" >> "$GITHUB_OUTPUT"
+
+      - name: Deploy frontend
+        # Same job, same pipeline, same push-to-main gate as the API deploy
+        # above -- not a separate workflow.
+        if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+        env:
+          FRONTEND_BUCKET: ${{ steps.get-outputs.outputs.frontend_bucket }}
+          FRONTEND_DISTRIBUTION_ID: ${{ steps.get-outputs.outputs.frontend_distribution_id }}
+        run: make deploy-frontend
 
       - name: Post-deploy smoke test
         if: github.ref == 'refs/heads/main' && github.event_name == 'push'
         env:
-          API_BASE_URL: ${{ steps.get-endpoint.outputs.endpoint }}
+          API_BASE_URL: ${{ steps.get-outputs.outputs.endpoint }}
         run: make test-smoke

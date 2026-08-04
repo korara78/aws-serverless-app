@@ -108,6 +108,57 @@ Resources:
                 Resource:
                   - "arn:aws:s3:::aws-sam-cli-managed-default*"
                   - "arn:aws:s3:::aws-sam-cli-managed-default*/*"
+              # The frontend's own bucket: created/updated by `sam deploy`
+              # itself, then synced into by a separate `aws s3 sync` step in
+              # ci-cd.yml (SAM doesn't upload arbitrary static files, only
+              # the resources it manages) — both need the same permissions.
+              - Sid: FrontendBucket
+                Effect: Allow
+                Action:
+                  - s3:CreateBucket
+                  - s3:DeleteBucket
+                  - s3:PutBucketPolicy
+                  - s3:DeleteBucketPolicy
+                  - s3:PutBucketPublicAccessBlock
+                  - s3:PutEncryptionConfiguration
+                  - s3:GetBucketLocation
+                  - s3:GetObject
+                  - s3:PutObject
+                  - s3:DeleteObject
+                  - s3:ListBucket
+                  - s3:TagResource
+                Resource:
+                  - !Sub "arn:aws:s3:::${RepoName}-frontend*"
+                  - !Sub "arn:aws:s3:::${RepoName}-frontend*/*"
+              # CloudFront resources don't have a predictable ARN before
+              # they're created (the distribution/OAC ID is assigned on
+              # creation), so the Create* actions need Resource: "*" — this
+              # is standard for AWS resource-creation IAM actions, not a
+              # broader grant than necessary. The rest are scoped to this
+              # account. CreateInvalidation is what ci-cd.yml uses after
+              # every frontend sync so CloudFront serves the new files
+              # immediately instead of stale cached ones.
+              - Sid: CloudFrontDistributionCreate
+                Effect: Allow
+                Action:
+                  - cloudfront:CreateDistribution
+                  - cloudfront:CreateOriginAccessControl
+                Resource: "*"
+              - Sid: CloudFrontDistributionManage
+                Effect: Allow
+                Action:
+                  - cloudfront:GetDistribution
+                  - cloudfront:UpdateDistribution
+                  - cloudfront:DeleteDistribution
+                  - cloudfront:TagResource
+                  - cloudfront:GetOriginAccessControl
+                  - cloudfront:UpdateOriginAccessControl
+                  - cloudfront:DeleteOriginAccessControl
+                  - cloudfront:CreateInvalidation
+                  - cloudfront:GetInvalidation
+                Resource:
+                  - !Sub "arn:aws:cloudfront::${AWS::AccountId}:distribution/*"
+                  - !Sub "arn:aws:cloudfront::${AWS::AccountId}:origin-access-control/*"
               - Sid: Lambda
                 Effect: Allow
                 Action:

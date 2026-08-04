@@ -1,4 +1,4 @@
-.PHONY: build test-unit test-integration test test-local-invoke deploy test-smoke
+.PHONY: build test-unit test-integration test test-local-invoke deploy deploy-frontend test-smoke
 
 build:
 	sam build
@@ -53,6 +53,16 @@ test-local-invoke: build
 
 deploy:
 	sam deploy
+
+# Requires FRONTEND_BUCKET and FRONTEND_DISTRIBUTION_ID (the stack's
+# FrontendBucketName/FrontendDistributionId outputs) — CI passes these in
+# from `aws cloudformation describe-stacks` after `make deploy` succeeds;
+# locally, read them the same way. SAM manages the bucket/distribution
+# resources themselves but doesn't sync arbitrary static files into the
+# bucket, hence the plain `aws s3 sync` here rather than anything sam-native.
+deploy-frontend:
+	aws s3 sync frontend/ "s3://$(FRONTEND_BUCKET)/" --delete
+	aws cloudfront create-invalidation --distribution-id "$(FRONTEND_DISTRIBUTION_ID)" --paths "/*"
 
 test-smoke:
 	pytest tests/smoke -v

@@ -54,14 +54,23 @@ Steps, in order:
 4. **`make test`** — unit + integration tests.
 5. **Configure AWS credentials** *(main pushes only)* — OIDC role assumption,
    no stored keys. See [Guide 5](05-github-oidc-deploy-setup.md).
-6. **`sam deploy`** *(main pushes only)* — deploys `template.yaml`'s stack.
-7. **Get API endpoint** *(main pushes only)* — reads the `ApiEndpoint` output
-   straight from the just-updated CloudFormation stack via
-   `aws cloudformation describe-stacks`, rather than hardcoding the URL
-   anywhere — the URL is only knowable after a real deploy, and hardcoding
-   it would silently go stale if the stack were ever recreated.
-8. **`make test-smoke`** *(main pushes only)* — the live smoke test, using
-   the endpoint from the previous step as `API_BASE_URL`.
+6. **`sam deploy`** *(main pushes only)* — deploys `template.yaml`'s stack:
+   the API/Lambda/DynamoDB resources *and* the frontend's S3 bucket +
+   CloudFront distribution. SAM manages all of these as CloudFormation
+   resources, but it doesn't upload arbitrary static files into the
+   bucket — that's a separate step below.
+7. **Get stack outputs** *(main pushes only)* — reads `ApiEndpoint`,
+   `FrontendBucketName`, and `FrontendDistributionId` straight from the
+   just-updated CloudFormation stack via `aws cloudformation describe-stacks`,
+   rather than hardcoding any of them — they're only knowable after a real
+   deploy, and hardcoding would silently go stale if the stack were ever
+   recreated.
+8. **`make deploy-frontend`** *(main pushes only)* — `aws s3 sync frontend/`
+   into the bucket from the previous step, then a CloudFront invalidation
+   so the new files are served immediately instead of whatever was cached
+   from the last deploy.
+9. **`make test-smoke`** *(main pushes only)* — the live smoke test, using
+   the API endpoint from step 7 as `API_BASE_URL`.
 
 Every `*(main pushes only)*` step above is gated with the same condition:
 

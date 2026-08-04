@@ -74,12 +74,24 @@ GET  /price                                 current BTC/USD price (cached proxy 
   balance — the cache is a convenience, the ledger is the source of truth.
 - **Append-only.** No endpoint updates or deletes a `Transactions` row, ever.
 
+## Dashboard
+
+A single static page (`frontend/index.html` — no build step, no framework),
+served via CloudFront from a private S3 bucket, same AWS account and same
+deploy pipeline as the API. "Login" is entirely simulated and client-side:
+no password, no server session — a "Create demo account" button calls the
+real `POST /accounts` endpoint and remembers the returned `account_id` in
+`localStorage`. The dashboard's own URL is a generated CloudFront domain
+(the `FrontendURL` stack output), not something fixed in advance.
+
 ## Repo layout
 
 ```
 ├── template.yaml              SAM template: Accounts + Transactions tables (GSI
-│                               on account_id), Lambda, API Gateway routes
+│                               on account_id), Lambda, API Gateway routes,
+│                               S3 + CloudFront for the frontend
 ├── src/app.py                 ledger handler (accounts, transactions, price feed)
+├── frontend/index.html        the dashboard — single static page, no build step
 ├── tests/
 │   ├── unit/                  moto-mocked DynamoDB, no Docker, sub-second —
 │   │                           idempotency, atomicity, insufficient-funds,
@@ -106,6 +118,8 @@ make test-unit          # fast, mocked, no Docker
 make test-integration   # real DynamoDB Local in Docker
 make test-local-invoke  # sam local invoke through the actual Lambda/Docker runtime
 make deploy              # requires your own AWS credentials + samconfig.toml
+make deploy-frontend     # aws s3 sync + CloudFront invalidation — requires
+                          # FRONTEND_BUCKET/FRONTEND_DISTRIBUTION_ID (stack outputs)
 ```
 
 ## What actually broke
