@@ -76,13 +76,16 @@ GET  /price                                 current BTC/USD price (cached proxy 
 
 ## Dashboard
 
+**Live:** `https://de10098lmdvpn.cloudfront.net`
+
+![Live dashboard screenshot: a freshly created demo account showing a USD balance of 33,338.49 and a BTC balance of 0.99700228, a Buy/Sell form, and a transaction history panel with a single "Seed" row marked Executed — a real screenshot of the deployed site, not a mockup.](guides-assets/dashboard-live-screenshot.png)
+
 A single static page (`frontend/index.html` — no build step, no framework),
 served via CloudFront from a private S3 bucket, same AWS account and same
 deploy pipeline as the API. "Login" is entirely simulated and client-side:
 no password, no server session — a "Create demo account" button calls the
 real `POST /accounts` endpoint and remembers the returned `account_id` in
-`localStorage`. The dashboard's own URL is a generated CloudFront domain
-(the `FrontendURL` stack output), not something fixed in advance.
+`localStorage`.
 
 ## Repo layout
 
