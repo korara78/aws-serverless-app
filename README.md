@@ -27,29 +27,14 @@ says it should be, not a stale snapshot.
 
 ## Pipeline
 
-```
- GitHub Actions
-       |
-       v
- Docker / SAM CLI ---- sam local invoke against a Dockerized DynamoDB
-       |                (proves the packaged Lambda artifact actually runs)
-       v
- Pytest suite --------- unit (moto-mocked) + integration (real DynamoDB Local)
-       |
-       | deploy only if all of the above passes
-       v
- Serverless Backend
- (API Gateway -> Lambda -> DynamoDB)
-       |
-       | hits the live, deployed endpoint
-       v
- Post-deploy smoke test
-```
+![Build-time pipeline with pytest execution detail: a code push triggers GitHub Actions, which spins up a temporary, disposable runner. Inside it, the pytest suite runs unit tests against mocked DynamoDB and integration tests against a throwaway Docker DynamoDB Local container, both destroyed when the run ends. Only after pytest passes does deploy happen, touching the real, separate deployed infrastructure (API Gateway → Lambda → DynamoDB), followed by a post-deploy smoke test.](guides-assets/build-time-pipeline-pytest-detail.png)
 
 Deploys authenticate via a GitHub OIDC-trusted IAM role (`bootstrap/github-oidc.yaml`)
 scoped to this repo's `main` branch — no AWS access keys stored anywhere.
 
 ## The ledger
+
+![Run-time flow for a Bitcoin purchase: a user buying BTC sends a single request through API Gateway to a Lambda function, which checks balance, checks for a duplicate transaction, and atomically updates DynamoDB. A response routes back confirming the trade or explaining why it didn't go through — one request in, one response out, no pipeline involved.](guides-assets/btc-purchase-runtime-flow.png)
 
 **Data model:** an `Accounts` table (cached `usd_balance`/`btc_balance`, for fast
 reads) and an append-only `Transactions` table (the actual source of truth — see
