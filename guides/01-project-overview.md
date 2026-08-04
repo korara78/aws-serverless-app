@@ -75,6 +75,16 @@ Each box maps directly to a file in this repo:
 
 ## What the API actually does
 
+![Run-time flow for a Bitcoin purchase: a user buying BTC sends a single request through API Gateway to a Lambda function, which checks balance, checks for a duplicate transaction, and atomically updates DynamoDB. A response routes back confirming the trade or explaining why it didn't go through — one request in, one response out. Nothing else in the system reacts afterward; there's no separate process watching for database changes once the write happens.](../guides-assets/btc-purchase-runtime-flow.png)
+
+Worth contrasting deliberately with the build-time pipeline diagram above:
+that one is a multi-stage pipeline that only runs on a code push. This is
+the opposite — a single Lambda execution, triggered by a user action, no
+pipeline involved at all. The two diagrams answer two different questions
+("what happens when code changes" vs. "what happens when a user trades"),
+and conflating them is an easy way to misdescribe how a serverless API
+actually behaves.
+
 Six routes, one Lambda function, two DynamoDB tables (`Accounts`, and an
 append-only `Transactions` table with a `account_id`+`executed_at` GSI for
 per-account history queries):

@@ -7,6 +7,8 @@ it just calls a `Makefile` target — see [Guide 2](02-environment-setup.md)
 for why that matters (local dev and CI can never quietly drift apart, since
 they're running the literal same command).
 
+![Build-time pipeline with pytest execution detail: a code push triggers GitHub Actions, which spins up a temporary, disposable runner. Inside it, the pytest suite runs unit tests against mocked DynamoDB and integration tests against a throwaway Docker DynamoDB Local container, both destroyed when the run ends. Only after pytest passes does deploy happen, touching the real, separate deployed infrastructure (API Gateway → Lambda → DynamoDB), followed by a post-deploy smoke test.](../guides-assets/build-time-pipeline-pytest-detail.png)
+
 ## Trigger and concurrency
 
 ```yaml
