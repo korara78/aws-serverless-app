@@ -411,6 +411,34 @@ def test_fractional_btc_amount_precision_reconciles(ledger_tables, monkeypatch):
 # --- Coinbase price feed -------------------------------------------------------
 
 
+def test_response_includes_cors_header_when_frontend_origin_configured(ledger_tables, monkeypatch):
+    # Regression test for a real bug caught against the live deployed
+    # frontend: SAM's Globals.Api.Cors only auto-configures the OPTIONS
+    # preflight response — with a Lambda proxy integration, the actual
+    # GET/POST response headers are whatever the Lambda itself returns.
+    # Without this, the preflight succeeds and the browser blocks the real
+    # request anyway, with no Access-Control-Allow-Origin header at all.
+    # A 404 on a nonexistent account is enough to exercise _response() —
+    # no need for a price fetch here.
+    import app
+
+    monkeypatch.setattr(app, "FRONTEND_ORIGIN", "https://example.cloudfront.net")
+    response = app.lambda_handler(
+        _event("GET", "/accounts/{account_id}", path_params={"account_id": "missing"}), None
+    )
+    assert response["headers"]["Access-Control-Allow-Origin"] == "https://example.cloudfront.net"
+
+
+def test_response_omits_cors_header_when_frontend_origin_unset(ledger_tables, monkeypatch):
+    import app
+
+    monkeypatch.setattr(app, "FRONTEND_ORIGIN", "")
+    response = app.lambda_handler(
+        _event("GET", "/accounts/{account_id}", path_params={"account_id": "missing"}), None
+    )
+    assert "Access-Control-Allow-Origin" not in response["headers"]
+
+
 def test_price_endpoint_returns_parsed_price(ledger_tables, monkeypatch):
     import app
 

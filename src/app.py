@@ -40,6 +40,18 @@ TRANSACTIONS_TABLE_NAME = os.environ.get("TRANSACTIONS_TABLE_NAME", "Transaction
 COINBASE_URL = "https://api.coinbase.com/v2/exchange-rates?currency=BTC"
 PRICE_CACHE_TTL_SECONDS = 45
 
+# SAM's Globals.Api.Cors auto-configures the OPTIONS *preflight* response —
+# that part API Gateway generates itself. It does NOT add
+# Access-Control-Allow-Origin to the actual GET/POST response; with a
+# Lambda proxy integration, whatever the Lambda returns is exactly what the
+# client gets, headers included. Confirmed live: preflight OPTIONS came
+# back with the header set correctly, the real POST that followed it came
+# back with none at all, and the browser blocked the response outright.
+# Same origin value the template computes for the Cors config, passed
+# through as an env var since app.py has no access to the CloudFormation
+# template's own Fn::GetAtt.
+FRONTEND_ORIGIN = os.environ.get("FRONTEND_ORIGIN", "")
+
 # Standard Bitcoin precision — a satoshi, 1e-8 BTC. Every BTC-denominated
 # value (a SEED balance, a computed btc_amount) is quantized to this before
 # it's used or stored anywhere, not left as the raw, arbitrary-length result
@@ -101,9 +113,12 @@ def _now_iso():
 
 
 def _response(status_code, body=None):
+    headers = {"Content-Type": "application/json"}
+    if FRONTEND_ORIGIN:
+        headers["Access-Control-Allow-Origin"] = FRONTEND_ORIGIN
     return {
         "statusCode": status_code,
-        "headers": {"Content-Type": "application/json"},
+        "headers": headers,
         # default=str renders Decimal as its exact decimal string, not a
         # float — avoids silently reintroducing float rounding at the JSON
         # boundary after doing all the real math in Decimal.

@@ -181,6 +181,17 @@ design), so accounts created here accumulate in the live environment, same
 as every other suite in this portfolio that creates real records against a
 live target rather than cleaning up after itself.
 
+**A real, honest gap this layer has:** `requests` (like every layer above
+it) doesn't enforce CORS — only an actual browser does. A CORS
+misconfiguration between the API and the frontend (see Guide 6 Part 4 for
+the real one this project shipped: a preflight that succeeds while the
+actual response is missing the required header) is invisible to all four
+layers here, `test_smoke.py` included, since none of them is a browser
+making a cross-origin request. The only thing that actually caught it was
+opening the live dashboard in a real browser after deploying. That's a
+genuine blind spot in this test suite, not a solved problem — a headless-
+browser check against the live frontend would close it, and isn't built.
+
 ## Summary
 
 | Layer | Real DynamoDB? | Real Lambda runtime? | Real network? | Real deployed endpoint? |

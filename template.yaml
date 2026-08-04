@@ -20,6 +20,12 @@ Globals:
         # key in --env-vars that isn't. Stays empty on a real deploy, so
         # app.py's `if _endpoint_url:` check is never true there.
         DYNAMODB_ENDPOINT_URL: ""
+        # SAM's Cors config (below) only auto-handles the OPTIONS preflight
+        # — it doesn't add Access-Control-Allow-Origin to the actual
+        # GET/POST response, since that's a Lambda proxy integration and
+        # whatever app.py returns is exactly what the client gets. app.py's
+        # _response() reads this to set that header itself on every response.
+        FRONTEND_ORIGIN: !Sub "https://${FrontendDistribution.DomainName}"
   Api:
     # The dashboard (served from the CloudFront domain below, a different
     # origin than the API) calls these endpoints directly via fetch() — the
