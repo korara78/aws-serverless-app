@@ -20,6 +20,16 @@ Globals:
         # key in --env-vars that isn't. Stays empty on a real deploy, so
         # app.py's `if _endpoint_url:` check is never true there.
         DYNAMODB_ENDPOINT_URL: ""
+  Api:
+    # The dashboard (served from the CloudFront domain below, a different
+    # origin than the API) calls these endpoints directly via fetch() — the
+    # browser enforces CORS on cross-origin requests, so the API has to
+    # explicitly allow the frontend's own origin. Scoped to that exact
+    # domain, not "*", even though this is a demo with no real auth.
+    Cors:
+      AllowOrigin: !Sub "'https://${FrontendDistribution.DomainName}'"
+      AllowHeaders: "'Content-Type'"
+      AllowMethods: "'GET,POST,OPTIONS'"
 
 Resources:
   AccountsTable:
@@ -101,6 +111,74 @@ Resources:
             Path: /price
             Method: get
 
+  # --- Frontend: static dashboard, S3 + CloudFront ------------------------
+  # Same account, same stack, same deploy pipeline as the API — deliberately
+  # not a separate hosting service. The bucket itself is fully private
+  # (blocks all public access); CloudFront is the only thing allowed to
+  # read from it, via Origin Access Control below, not the legacy "S3
+  # static website hosting" mode (which requires the bucket to be public).
+  FrontendBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub "${AWS::StackName}-frontend"
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+
+  FrontendOAC:
+    Type: AWS::CloudFront::OriginAccessControl
+    Properties:
+      OriginAccessControlConfig:
+        Name: !Sub "${AWS::StackName}-frontend-oac"
+        OriginAccessControlOriginType: s3
+        SigningBehavior: always
+        SigningProtocol: sigv4
+
+  FrontendDistribution:
+    Type: AWS::CloudFront::Distribution
+    Properties:
+      DistributionConfig:
+        Enabled: true
+        DefaultRootObject: index.html
+        Origins:
+          - Id: FrontendBucketOrigin
+            DomainName: !GetAtt FrontendBucket.RegionalDomainName
+            OriginAccessControlId: !GetAtt FrontendOAC.Id
+            # Required by the resource type even though OAC (not OAI) is
+            # what actually authorizes access here.
+            S3OriginConfig:
+              OriginAccessIdentity: ""
+        DefaultCacheBehavior:
+          TargetOriginId: FrontendBucketOrigin
+          ViewerProtocolPolicy: redirect-to-https
+          AllowedMethods: [GET, HEAD]
+          CachedMethods: [GET, HEAD]
+          # AWS managed "CachingOptimized" policy — no custom cache
+          # behavior needed for a single static page with no query strings.
+          CachePolicyId: 658327ea-f89d-4fab-a63d-7e88639e58f6
+
+  # CloudFront's Service Principal is allowed to read objects, but only
+  # when the request is on behalf of *this* distribution specifically
+  # (the SourceArn condition) — not any CloudFront distribution in the
+  # account.
+  FrontendBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref FrontendBucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: cloudfront.amazonaws.com
+            Action: s3:GetObject
+            Resource: !Sub "${FrontendBucket.Arn}/*"
+            Condition:
+              StringEquals:
+                AWS:SourceArn: !Sub "arn:aws:cloudfront::${AWS::AccountId}:distribution/${FrontendDistribution}"
+
 Outputs:
   ApiEndpoint:
     Description: API Gateway endpoint URL for the Prod stage
@@ -109,3 +187,11 @@ Outputs:
     Value: !Ref AccountsTable
   TransactionsTableName:
     Value: !Ref TransactionsTable
+  FrontendURL:
+    Description: CloudFront URL for the dashboard
+    Value: !Sub "https://${FrontendDistribution.DomainName}"
+  FrontendBucketName:
+    Value: !Ref FrontendBucket
+  FrontendDistributionId:
+    Description: Needed to invalidate the CloudFront cache after a frontend deploy
+    Value: !Ref FrontendDistribution

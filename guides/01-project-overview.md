@@ -70,7 +70,7 @@ Each box maps directly to a file in this repo:
 | GitHub Actions | `.github/workflows/ci-cd.yml` |
 | Docker / SAM CLI local invoke | `Makefile`'s `test-local-invoke` target, `events/get-account.json`, `env.local-invoke.json` |
 | Pytest suite | `tests/unit/`, `tests/integration/` |
-| Serverless Backend | `template.yaml`, `src/app.py` |
+| Serverless Backend | `template.yaml`, `src/app.py`, `frontend/index.html` |
 | Post-deploy smoke test | `tests/smoke/test_smoke.py` |
 
 ## What the API actually does
@@ -104,6 +104,37 @@ of an untracked starting-balance field, why two REJECTED_* statuses behave
 differently under the hood) lives as comments directly in `src/app.py` —
 it's short enough to read directly rather than needing a separate
 walkthrough.
+
+## The dashboard (frontend)
+
+`frontend/index.html` — a single, self-contained static page (no build
+step, no framework) served via CloudFront from a private S3 bucket
+(`FrontendBucket`/`FrontendDistribution` in `template.yaml`), same AWS
+account and same deploy pipeline as the API, not a separate hosting
+service. CloudFront reaches the bucket via Origin Access Control (OAC),
+not the legacy "S3 static website hosting" mode, so the bucket itself
+stays fully private — `FrontendBucketPolicy` grants read access only to
+requests actually coming from this specific distribution.
+
+**"Simulated login," concretely:** there's no password, no server-side
+session, and no auth endpoint. Loading the page with no `account_id` in
+`localStorage` shows a "Create demo account" button, which just calls
+`POST /accounts` — a real API call creating a real `Accounts` row — and
+stores the returned `account_id` client-side. Returning later with that ID
+still in `localStorage` skips straight to the dashboard. This satisfies the
+spec's own scope boundary directly: no real user auth/security is built,
+because there's no real money or real user data to protect.
+
+**CORS:** the dashboard and the API are different origins (CloudFront
+domain vs. API Gateway domain), so cross-origin `fetch()` calls need the
+API to explicitly allow it — `Globals.Api.Cors.AllowOrigin` in
+`template.yaml` is scoped to the exact CloudFront domain via
+`!GetAtt FrontendDistribution.DomainName`, not `"*"`.
+
+**Design:** paper/ink/bottle-green/brick color palette, Space Grotesk for
+UI text, JetBrains Mono for every numeric value (prices, balances,
+transaction amounts) — deliberately distinguishing "a number that means
+money" from ordinary UI text at a glance.
 
 ## Guide series
 

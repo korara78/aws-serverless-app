@@ -92,6 +92,35 @@ gh secret set AWS_REGION --repo <org>/<repo> --body "<region>"
 
 **6. Push to `main`** and watch the Actions run — `gh run watch <run-id> --exit-status`.
 
+## Updating an already-deployed bootstrap stack
+
+The deploy role's permissions aren't fixed forever — adding new AWS
+resources to `template.yaml` (the frontend's S3 bucket and CloudFront
+distribution, for example) means the deploy role needs new permissions to
+create/manage them too, or CI's own `sam deploy` step fails with
+`AccessDenied` the moment it tries to touch a resource type it was never
+granted. Updating the already-deployed stack uses the *exact same command*
+as step 3 above — `aws cloudformation deploy` detects the stack already
+exists and creates an update changeset instead of a new stack, so there's
+no separate "update" command to remember:
+
+```bash
+aws cloudformation deploy \
+  --template-file bootstrap/github-oidc.yaml \
+  --stack-name aws-serverless-app-github-oidc \
+  --capabilities CAPABILITY_NAMED_IAM \
+  --profile <your-profile> \
+  --region us-east-1
+```
+
+This step genuinely can't be done by CI itself — the whole point of scoping
+the deploy role tightly is that it can't grant itself new permissions,
+including permission to modify its own policy. It has to be run manually,
+with admin (or at least IAM-role-editing) credentials, whenever
+`bootstrap/github-oidc.yaml`'s policy changes. The GitHub secrets
+(`AWS_DEPLOY_ROLE_ARN`, `AWS_REGION`) don't need touching for a policy-only
+update — the role's ARN doesn't change, only what it's allowed to do.
+
 ## If the deploy role's bootstrap S3 stack ever gets stuck
 
 `sam deploy --resolve-s3` creates its own tiny managed stack
