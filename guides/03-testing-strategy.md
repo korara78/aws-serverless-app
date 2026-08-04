@@ -74,6 +74,22 @@ for every transactional write — `src/app.py`'s `dynamodb_client`. Caught
 locally with `moto` before this ever reached DynamoDB Local or a real
 account; see [Guide 6](06-troubleshooting-log.md) for the full writeup.
 
+**A second real bug this layer caught — but only after the first live
+deploy, not before:** `verify_balance` reported false mismatches on
+genuinely correct accounts. Root cause was a Python-`Decimal`-vs-DynamoDB
+precision mismatch (Python's default context caps at 28 significant
+digits, DynamoDB's own Number type preserves up to 38), fixed by
+quantizing every BTC-denominated value to satoshi precision (1e-8) at the
+one point each enters the system, plus a `TypeSerializer` patch for a
+related scientific-notation issue that quantizing exposed. The regression
+test for this (`test_reconciliation_matches_with_high_precision_mixed_digit_amounts`)
+deliberately lives here, not in `tests/unit` — confirmed moto's own
+`UpdateExpression` arithmetic goes through the same Python `Decimal`
+context as the test itself, so it can't actually catch this class of bug;
+real DynamoDB Local can, and does. Full writeup, including why the first
+fix attempt made things worse before finding the real one, in
+[Guide 6](06-troubleshooting-log.md).
+
 One implementation detail worth calling out: `src/app.py` creates its
 `boto3` resources once, at import time, using whatever table names and
 `DYNAMODB_ENDPOINT_URL` are set in the environment at that moment (the
