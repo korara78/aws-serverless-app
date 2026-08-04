@@ -388,15 +388,61 @@ Local reproduces the exact discrepancy real AWS does.
 
 ---
 
-## The pattern across all three parts
+## Part 4: CORS preflight succeeds, the real request still gets blocked
 
-Same lesson three times, in three different layers: a green result (a
+The frontend deployed cleanly — bucket, distribution, `sam deploy`, the
+API's post-deploy smoke test all green. Loading the live dashboard in a
+real browser and clicking "Create demo account" still failed outright:
+
+```
+Access to fetch at '.../Prod/accounts' from origin 'https://d....cloudfront.net'
+has been blocked by CORS policy: No 'Access-Control-Allow-Origin' header
+is present on the requested resource.
+```
+
+**Cause:** confirmed directly with `curl -X OPTIONS ... -H "Origin: ..."` —
+the preflight response came back with `access-control-allow-origin` set
+correctly, exactly matching `Globals.Api.Cors.AllowOrigin`. The *actual*
+`POST /accounts` that immediately followed it came back with no CORS
+header at all. SAM's `Cors` config only auto-generates the OPTIONS
+preflight method and its response — with a Lambda proxy integration, API
+Gateway passes through exactly whatever headers the Lambda itself returns
+for the real request, and `app.py`'s `_response()` never set one. The
+browser's preflight check passing is necessary but not sufficient; it
+doesn't mean the real response will satisfy CORS too.
+
+**Fix:** pass the frontend's origin into the Lambda as an env var
+(`FRONTEND_ORIGIN`, the same `!Sub "https://${FrontendDistribution.DomainName}"`
+value already used for the `Cors` config, so there's exactly one place
+that domain is computed) and have `_response()` set
+`Access-Control-Allow-Origin` on every response, not just rely on API
+Gateway's auto-generated preflight to cover it.
+
+**Why no local/CI test caught this before the live check:** every existing
+test calls `app.lambda_handler` directly in Python — there's no actual
+browser, and therefore no CORS enforcement to violate in the first place.
+Enforcement is a browser behavior, not a server behavior; a server can
+return a CORS-non-compliant response and nothing about the HTTP exchange
+itself is "wrong" from the server's or `curl`'s point of view. The two new
+unit tests (`test_response_includes_cors_header_when_frontend_origin_configured`/
+`..._omits_cors_header_when_frontend_origin_unset`) can only verify the
+Lambda's own output includes the right header — they can't (and don't
+try to) simulate actual browser CORS enforcement. That gap is inherent to
+testing at this level, not a coverage bug to fix; it's exactly why the
+real-browser-against-the-live-deployment check exists as its own step.
+
+---
+
+## The pattern across all four parts
+
+Same lesson four times, in four different layers: a green result (a
 passing `make test-local-invoke`, a `TransactionCanceledException` that
 looks like a permissions problem, a live smoke test that failed for an
-unrelated transient reason) isn't proof of anything — good or bad — until
-you've checked what it actually verified, or manually re-confirmed the
-real thing works. Reproducing each failure in isolation — a minimal script
-outside the app, a debug print of the actual container environment, a
-direct `docker logs` check, comparing exact digit counts between two
-"equal-looking" numbers — is what turned every vague symptom across all
-three parts into a precise, one-line root cause.
+unrelated transient reason, a CORS preflight that succeeds) isn't proof of
+anything — good or bad — until you've checked what it actually verified,
+or manually re-confirmed the real thing works. Reproducing each failure in
+isolation — a minimal script outside the app, a debug print of the actual
+container environment, a direct `docker logs` check, comparing exact digit
+counts between two "equal-looking" numbers, a raw `curl -X OPTIONS` against
+the live endpoint — is what turned every vague symptom across all four
+parts into a precise, one-line root cause.
